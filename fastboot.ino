@@ -11,13 +11,13 @@
 
 // pio-usb is required for rp2040 host
 #include "pio_usb.h"
-#define HOST_PIN_DP   2    // RP2350-USB-A: D+ = GPIO2, D- = GPIO3
+#define HOST_PIN_DP   12   // Verified with the original working sketch: D+ = GPIO12, D- = GPIO13
 
 #include "Adafruit_TinyUSB.h"
 
 #define LANGUAGE_ID 0x0409  // English
 
-#define FIRMWARE_VERSION "rp2350-fastboot-20260711-color-fallback"
+#define FIRMWARE_VERSION "rp2350-fastboot-20260711-gpio12"
 
 
 #define REBOOT_CMD "oem set-gpu-preemption 0 androidboot.selinux=permissive\x00"
@@ -286,16 +286,12 @@ void descriptor_complete_cb(tuh_xfer_t *xfer)
     Serial1.printf("\n");
 
     // Second, find the bulk OUT endpoint.
-    // Prefer Android Fastboot interface FF/42/03, but some phones/bootloaders
-    // expose a vendor-specific bulk interface with a different subclass/protocol.
+    // Keep this intentionally close to the original working sketch: accept the
+    // first BULK OUT endpoint. Some Fastboot bootloaders don't report FF/42/03.
     uint8_t dev_addr = xfer->daddr;
     uint8_t ep_addr = 0; // Initialize to 0, meaning not found.
     uint8_t *end = desc + xfer->actual_len;
     const tusb_desc_endpoint_t *ep_desc = nullptr;
-    const tusb_desc_endpoint_t *fallback_ep_desc = nullptr;
-    uint8_t fallback_ep_addr = 0;
-    bool exact_fastboot_interface = false;
-    bool vendor_bulk_interface = false;
 
     // Iterate through the descriptor to find the bulk OUT endpoint
     while (end - desc >= 2)
@@ -305,13 +301,10 @@ void descriptor_complete_cb(tuh_xfer_t *xfer)
 
         if (desc[1] == TUSB_DESC_INTERFACE && descriptor_len >= 9)
         {
-            // Android Fastboot interface: vendor class, subclass 0x42, protocol 0x03.
-            exact_fastboot_interface = desc[5] == 0xff && desc[6] == 0x42 && desc[7] == 0x03;
-            vendor_bulk_interface = desc[5] == 0xff;
             Serial.printf("Interface found: class = %d, subclass = %d, protocol = %d\n", desc[5], desc[6], desc[7]);
             Serial1.printf("Interface found: class = %d, subclass = %d, protocol = %d\n", desc[5], desc[6], desc[7]);
         }
-        else if (vendor_bulk_interface && desc[1] == TUSB_DESC_ENDPOINT && descriptor_len >= sizeof(tusb_desc_endpoint_t))
+        else if (desc[1] == TUSB_DESC_ENDPOINT && descriptor_len >= sizeof(tusb_desc_endpoint_t))
         {
             // Found an endpoint descriptor
             uint8_t endpoint_address = desc[2];
@@ -321,30 +314,16 @@ void descriptor_complete_cb(tuh_xfer_t *xfer)
             if ((endpoint_address & TUSB_DIR_IN_MASK) == 0 &&
                 (attributes & 0x03) == TUSB_XFER_BULK)
             {
-                if (exact_fastboot_interface) {
-                    ep_addr = endpoint_address;
-                    ep_desc = (const tusb_desc_endpoint_t*)desc;
-                    Serial.printf("Exact Fastboot Bulk OUT endpoint found at address 0x%02x\n", ep_addr);
-                    Serial1.printf("Exact Fastboot Bulk OUT endpoint found at address 0x%02x\n", ep_addr);
-                    break;
-                } else if (!fallback_ep_desc) {
-                    fallback_ep_addr = endpoint_address;
-                    fallback_ep_desc = (const tusb_desc_endpoint_t*)desc;
-                    Serial.printf("Vendor Bulk OUT fallback endpoint found at address 0x%02x\n", fallback_ep_addr);
-                    Serial1.printf("Vendor Bulk OUT fallback endpoint found at address 0x%02x\n", fallback_ep_addr);
-                }
+                ep_addr = endpoint_address;
+                ep_desc = (const tusb_desc_endpoint_t*)desc;
+                Serial.printf("Bulk OUT endpoint found at address 0x%02x\n", ep_addr);
+                Serial1.printf("Bulk OUT endpoint found at address 0x%02x\n", ep_addr);
+                break;
             }
         }
 
         // Move to the next descriptor in the configuration descriptor
         desc += descriptor_len;
-    }
-
-    if (!ep_desc && fallback_ep_desc) {
-        ep_addr = fallback_ep_addr;
-        ep_desc = fallback_ep_desc;
-        Serial.printf("Using vendor Bulk OUT fallback endpoint 0x%02x\n", ep_addr);
-        Serial1.printf("Using vendor Bulk OUT fallback endpoint 0x%02x\n", ep_addr);
     }
 
     if (ep_addr != 0 && ep_desc)
