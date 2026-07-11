@@ -1,0 +1,79 @@
+name: Build RP2350 firmware
+
+on:
+  push:
+    paths:
+      - "fastboot.ino"
+      - ".github/workflows/build.yml"
+  pull_request:
+    paths:
+      - "fastboot.ino"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+        with:
+          version: latest
+
+      - name: Install RP2350 core
+        env:
+          RP2040_INDEX_URL: https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls "$RP2040_INDEX_URL"
+          arduino-cli core update-index
+          arduino-cli core install rp2040:rp2040@4.5.2
+
+      - name: Install libraries
+        run: |
+          arduino-cli lib update-index
+          arduino-cli lib install "Adafruit TinyUSB Library@3.7.7"
+          arduino-cli lib install "Adafruit NeoPixel@1.15.5"
+          arduino-cli lib install "Pico PIO USB@0.7.2"
+
+      - name: Prepare sketch
+        run: |
+          mkdir -p .build/fastboot
+          cp fastboot.ino .build/fastboot/fastboot.ino
+
+      - name: Compile firmware
+        run: |
+          mkdir -p artifacts
+          arduino-cli compile \
+            --fqbn rp2040:rp2040:rpipico2:freq=120 \
+            --warnings all \
+            --export-binaries \
+            --output-dir "$PWD/artifacts" \
+            .build/fastboot
+
+      - name: List build artifacts
+        run: find artifacts -maxdepth 1 -type f -printf '%f (%s bytes)\n' | sort
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: rp2350-fastboot-${{ github.sha }}
+          path: |
+            artifacts/*.uf2
+            artifacts/*.bin
+            artifacts/*.elf
+            artifacts/*.map
+          if-no-files-found: error
+          retention-days: 30
