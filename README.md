@@ -2,6 +2,17 @@
 
 本固件使用 RP2350-USB-A 板载 RGB 灯提示 Fastboot 连接状态和命令执行状态，并使用板载 BOOTSEL/BOOT 按键触发命令。
 
+## 固件下载说明
+
+不要直接烧录仓库根目录里旧的 `fastboot.ino.uf2`。该文件可能不是当前源码编译出来的版本。
+
+请到 GitHub Actions 下载最新编译产物：
+
+1. 打开本仓库的 **Actions** 页面。
+2. 进入最新一次 `Build RP2350 firmware` 成功运行记录。
+3. 在页面底部 **Artifacts** 下载 `rp2350-fastboot-...`。
+4. 解压后烧录里面最新生成的 `.uf2` 文件。
+
 ## 状态灯含义
 
 | 灯光 | 状态说明 |

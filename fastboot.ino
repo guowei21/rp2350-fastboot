@@ -17,6 +17,8 @@
 
 #define LANGUAGE_ID 0x0409  // English
 
+#define FIRMWARE_VERSION "rp2350-fastboot-20260711-boot-button"
+
 
 #define REBOOT_CMD "oem set-gpu-preemption 0 androidboot.selinux=permissive\x00"
 #define REBOOT_CMD_LEN (sizeof(REBOOT_CMD) - 1)
@@ -126,7 +128,8 @@ void setup()
   Serial.begin(115200);
   //while ( !Serial ) delay(10);   // wait for native usb
 
-  Serial.println("TinyUSB Dual Device Info Example");
+  Serial.println("TinyUSB Fastboot Host");
+  Serial.println(FIRMWARE_VERSION);
 
 
   // These lines are specifically to support the Adafruit Trinket 5V 16 MHz.
@@ -137,8 +140,8 @@ void setup()
   // END of Trinket-specific code.
 
   pixels.begin(); // INITIALIZE NeoPixel strip object (REQUIRED)
-  Serial.printf("READY!\n");
-  Serial1.printf("READY!\n");
+  Serial.printf("READY! %s\n", FIRMWARE_VERSION);
+  Serial1.printf("READY! %s\n", FIRMWARE_VERSION);
   pixels.clear(); // Set all pixel colors to 'off'
   pixels.setPixelColor(0, pixels.Color(255, 0, 0));// Red1	255 0 0	#FF0000  --green
   pixels.show();   // Send the updated pixel colors to the hardware.
