@@ -61,7 +61,7 @@ jobs:
         run: |
           mkdir -p artifacts
           arduino-cli compile \
-            --fqbn rp2040:rp2040:rpipico2:freq=120 \
+            --fqbn rp2040:rp2040:rpipico2:freq=120,usbstack=tinyusb \
             --warnings all \
             --export-binaries \
             --output-dir "$PWD/artifacts" \
