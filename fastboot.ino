@@ -17,7 +17,7 @@
 
 #define LANGUAGE_ID 0x0409  // English
 
-#define FIRMWARE_VERSION "rp2350-fastboot-20260711-gpio12"
+#define FIRMWARE_VERSION "rp2350-fastboot-20260711-host-loop-fix"
 
 
 #define REBOOT_CMD "oem set-gpu-preemption 0 androidboot.selinux=permissive\x00"
@@ -214,6 +214,9 @@ void setup1() {
 void loop1()
 {
   USBHost.task();
+  // Preserve the scheduling used by the original firmware that enumerates
+  // reliably on this board. The PIO USB host stack runs entirely on core 1.
+  delay(100);
 }
 
 //--------------------------------------------------------------------+
@@ -291,7 +294,6 @@ void descriptor_complete_cb(tuh_xfer_t *xfer)
     uint8_t dev_addr = xfer->daddr;
     uint8_t ep_addr = 0; // Initialize to 0, meaning not found.
     uint8_t *end = desc + xfer->actual_len;
-    const tusb_desc_endpoint_t *ep_desc = nullptr;
 
     // Iterate through the descriptor to find the bulk OUT endpoint
     while (end - desc >= 2)
@@ -312,12 +314,21 @@ void descriptor_complete_cb(tuh_xfer_t *xfer)
 
             // If this is a BULK OUT endpoint, set ep_addr and break
             if ((endpoint_address & TUSB_DIR_IN_MASK) == 0 &&
-                (attributes & 0x03) == TUSB_XFER_BULK)
+                (attributes & TUSB_XFER_BULK) != 0)
             {
                 ep_addr = endpoint_address;
-                ep_desc = (const tusb_desc_endpoint_t*)desc;
                 Serial.printf("Bulk OUT endpoint found at address 0x%02x\n", ep_addr);
                 Serial1.printf("Bulk OUT endpoint found at address 0x%02x\n", ep_addr);
+
+                // Open the endpoint while its descriptor pointer still refers
+                // directly to the configuration descriptor buffer, matching
+                // the known-working firmware.
+                if (!tuh_edpt_open(dev_addr, (const tusb_desc_endpoint_t*)desc))
+                {
+                    Serial.printf("Failed to open Bulk OUT endpoint at address 0x%02x\n", ep_addr);
+                    Serial1.printf("Failed to open Bulk OUT endpoint at address 0x%02x\n", ep_addr);
+                    ep_addr = 0;
+                }
                 break;
             }
         }
@@ -326,17 +337,8 @@ void descriptor_complete_cb(tuh_xfer_t *xfer)
         desc += descriptor_len;
     }
 
-    if (ep_addr != 0 && ep_desc)
+    if (ep_addr != 0)
     {
-        // Attempt to open the endpoint
-        if (!tuh_edpt_open(dev_addr, ep_desc))
-        {
-            Serial.printf("Failed to open Bulk OUT endpoint at address 0x%02x\n", ep_addr);
-            Serial1.printf("Failed to open Bulk OUT endpoint at address 0x%02x\n", ep_addr);
-            fb_state = FB_DISCONNECTED;
-            return;
-        }
-
         fastboot_dev_addr = dev_addr;
         fastboot_ep_addr = ep_addr;
         fb_state = FB_READY_FIRST;
