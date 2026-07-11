@@ -17,7 +17,7 @@
 
 #define LANGUAGE_ID 0x0409  // English
 
-#define FIRMWARE_VERSION "rp2350-fastboot-20260711-boot-button"
+#define FIRMWARE_VERSION "rp2350-fastboot-20260711-color-fallback"
 
 
 #define REBOOT_CMD "oem set-gpu-preemption 0 androidboot.selinux=permissive\x00"
@@ -67,7 +67,8 @@ static volatile bool command_in_flight = false;
 // and which pin to use to send signals. Note that for older NeoPixel
 // strips you might need to change the third parameter -- see the
 // strandtest example for more information on possible values.
-Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
+// Waveshare RP2350-USB-A onboard WS2812 uses RGB byte order with Adafruit_NeoPixel.
+Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_RGB + NEO_KHZ800);
 
 static uint32_t state_color(FastbootState state)
 {
@@ -284,11 +285,17 @@ void descriptor_complete_cb(tuh_xfer_t *xfer)
     Serial.printf("\n");
     Serial1.printf("\n");
 
-    // Second, find the bulk OUT endpoint
+    // Second, find the bulk OUT endpoint.
+    // Prefer Android Fastboot interface FF/42/03, but some phones/bootloaders
+    // expose a vendor-specific bulk interface with a different subclass/protocol.
     uint8_t dev_addr = xfer->daddr;
-    uint8_t ep_addr = 0; // Initialize to 0, meaning not found
+    uint8_t ep_addr = 0; // Initialize to 0, meaning not found.
     uint8_t *end = desc + xfer->actual_len;
-    bool fastboot_interface = false;
+    const tusb_desc_endpoint_t *ep_desc = nullptr;
+    const tusb_desc_endpoint_t *fallback_ep_desc = nullptr;
+    uint8_t fallback_ep_addr = 0;
+    bool exact_fastboot_interface = false;
+    bool vendor_bulk_interface = false;
 
     // Iterate through the descriptor to find the bulk OUT endpoint
     while (end - desc >= 2)
@@ -299,11 +306,12 @@ void descriptor_complete_cb(tuh_xfer_t *xfer)
         if (desc[1] == TUSB_DESC_INTERFACE && descriptor_len >= 9)
         {
             // Android Fastboot interface: vendor class, subclass 0x42, protocol 0x03.
-            fastboot_interface = desc[5] == 0xff && desc[6] == 0x42 && desc[7] == 0x03;
+            exact_fastboot_interface = desc[5] == 0xff && desc[6] == 0x42 && desc[7] == 0x03;
+            vendor_bulk_interface = desc[5] == 0xff;
             Serial.printf("Interface found: class = %d, subclass = %d, protocol = %d\n", desc[5], desc[6], desc[7]);
             Serial1.printf("Interface found: class = %d, subclass = %d, protocol = %d\n", desc[5], desc[6], desc[7]);
         }
-        else if (fastboot_interface && desc[1] == TUSB_DESC_ENDPOINT && descriptor_len >= sizeof(tusb_desc_endpoint_t))
+        else if (vendor_bulk_interface && desc[1] == TUSB_DESC_ENDPOINT && descriptor_len >= sizeof(tusb_desc_endpoint_t))
         {
             // Found an endpoint descriptor
             uint8_t endpoint_address = desc[2];
@@ -313,23 +321,18 @@ void descriptor_complete_cb(tuh_xfer_t *xfer)
             if ((endpoint_address & TUSB_DIR_IN_MASK) == 0 &&
                 (attributes & 0x03) == TUSB_XFER_BULK)
             {
-                ep_addr = endpoint_address;
-                Serial.printf("Bulk OUT endpoint found at address 0x%02x\n", ep_addr);
-                Serial1.printf("Bulk OUT endpoint found at address 0x%02x\n", ep_addr);
-                // Attempt to open the endpoint
-                if (tuh_edpt_open(dev_addr, (const tusb_desc_endpoint_t*)desc))
-                {
-                    Serial.printf("Bulk OUT endpoint opened at address 0x%02x\n", ep_addr);
-                    Serial1.printf("Bulk OUT endpoint opened at address 0x%02x\n", ep_addr);
+                if (exact_fastboot_interface) {
+                    ep_addr = endpoint_address;
+                    ep_desc = (const tusb_desc_endpoint_t*)desc;
+                    Serial.printf("Exact Fastboot Bulk OUT endpoint found at address 0x%02x\n", ep_addr);
+                    Serial1.printf("Exact Fastboot Bulk OUT endpoint found at address 0x%02x\n", ep_addr);
+                    break;
+                } else if (!fallback_ep_desc) {
+                    fallback_ep_addr = endpoint_address;
+                    fallback_ep_desc = (const tusb_desc_endpoint_t*)desc;
+                    Serial.printf("Vendor Bulk OUT fallback endpoint found at address 0x%02x\n", fallback_ep_addr);
+                    Serial1.printf("Vendor Bulk OUT fallback endpoint found at address 0x%02x\n", fallback_ep_addr);
                 }
-                else
-                {
-                    ep_addr = 0; // Reset to 0 if the endpoint cannot be opened
-                    Serial.printf("Failed to open Bulk OUT endpoint at address 0x%02x, break!\n", ep_addr);
-                    Serial1.printf("Failed to open Bulk OUT endpoint at address 0x%02x, break!\n", ep_addr);
-                    return; // Do not proceed if the endpoint cannot be opened
-                }
-                break;
             }
         }
 
@@ -337,11 +340,29 @@ void descriptor_complete_cb(tuh_xfer_t *xfer)
         desc += descriptor_len;
     }
 
-    if (ep_addr != 0)
+    if (!ep_desc && fallback_ep_desc) {
+        ep_addr = fallback_ep_addr;
+        ep_desc = fallback_ep_desc;
+        Serial.printf("Using vendor Bulk OUT fallback endpoint 0x%02x\n", ep_addr);
+        Serial1.printf("Using vendor Bulk OUT fallback endpoint 0x%02x\n", ep_addr);
+    }
+
+    if (ep_addr != 0 && ep_desc)
     {
+        // Attempt to open the endpoint
+        if (!tuh_edpt_open(dev_addr, ep_desc))
+        {
+            Serial.printf("Failed to open Bulk OUT endpoint at address 0x%02x\n", ep_addr);
+            Serial1.printf("Failed to open Bulk OUT endpoint at address 0x%02x\n", ep_addr);
+            fb_state = FB_DISCONNECTED;
+            return;
+        }
+
         fastboot_dev_addr = dev_addr;
         fastboot_ep_addr = ep_addr;
         fb_state = FB_READY_FIRST;
+        Serial.printf("Bulk OUT endpoint opened at address 0x%02x\n", ep_addr);
+        Serial1.printf("Bulk OUT endpoint opened at address 0x%02x\n", ep_addr);
         Serial.printf("Fastboot ready; press BOOTSEL for command 1.\n");
         Serial1.printf("Fastboot ready; press BOOTSEL for command 1.\n");
 
@@ -593,3 +614,4 @@ static void print_utf16(uint16_t *temp_buf, size_t buf_len) {
   Serial.printf((char*)temp_buf);
   Serial1.printf((char*)temp_buf);
 }
+
